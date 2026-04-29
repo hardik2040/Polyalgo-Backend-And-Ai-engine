@@ -1,0 +1,62 @@
+# =========================
+# 🔐 ENV FILES
+# =========================
+.env
+.env.*
+*.env
+
+# =========================
+# 📦 NODE (backend)
+# =========================
+backend/node_modules/
+backend/dist/
+backend/build/
+backend/.next/
+backend/logs/
+backend/*.log
+
+# =========================
+# 🐍 PYTHON (ai-engine)
+# =========================
+ai-engine/__pycache__/
+ai-engine/*.pyc
+ai-engine/*.pyo
+ai-engine/*.pyd
+
+# Virtual env
+ai-engine/venv/
+ai-engine/env/
+ai-engine/.venv/
+
+# Python build
+ai-engine/build/
+ai-engine/dist/
+ai-engine/*.egg-info/
+
+# =========================
+# 🧪 TEST / COVERAGE
+# =========================
+coverage/
+htmlcov/
+.nyc_output/
+
+# =========================
+# 💻 SYSTEM FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# 🧠 AI / MODEL FILES
+# =========================
+*.pt
+*.pth
+*.h5
+*.onnx
+
+# =========================
+# 🔧 EDITOR FILES
+# =========================
+.vscode/
+.idea/
+*.swp

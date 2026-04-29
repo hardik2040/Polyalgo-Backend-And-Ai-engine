@@ -23,12 +23,10 @@ from rl.q_agent import agent as rl_agent, encode_state
 from trading.clob_service import place_order, cancel_order, get_wallet_balance
 from utils.db_sync import sync_trade_to_db, sync_prediction_to_db
 
-MAX_STAKE_USD              = float(os.environ.get("MAX_STAKE_USD", "1000"))
-MAX_TOTAL_EXPOSURE         = float(os.environ.get("MAX_TOTAL_EXPOSURE", "5000"))
 MIN_EV_THRESHOLD           = float(os.environ.get("MIN_EV_THRESHOLD", "0.05"))
 MIN_CONFIDENCE             = float(os.environ.get("MIN_CONFIDENCE", "0.60"))
 MIN_CONFIDENCE_NON_WEATHER = float(os.environ.get("MIN_CONFIDENCE_NON_WEATHER", "0.35"))
-STOP_LOSS_PCT              = float(os.environ.get("STOP_LOSS_PCT", "-95"))
+STOP_LOSS_PCT              = float(os.environ.get("STOP_LOSS_PCT", "-40"))
 TAKE_PROFIT_PCT            = float(os.environ.get("TAKE_PROFIT_PCT", "80"))
 WALLET_ADDRESS             = os.environ.get("WALLET_ADDRESS", "").strip()
 SCAN_INTERVAL_SEC          = int(os.environ.get("SCAN_INTERVAL_SEC", "60"))
@@ -38,6 +36,12 @@ MAX_MARKET_PRICE           = float(os.environ.get("MAX_MARKET_PRICE", "0.90"))
 MIN_LIQUIDITY_USD          = float(os.environ.get("MIN_LIQUIDITY_USD", "100"))
 CLOSED_MARKET_COOLDOWN_HOURS = int(os.environ.get("CLOSED_MARKET_COOLDOWN_HOURS", "24"))
 MIN_WIN_RATE_FOR_LARGE_STAKES = 0.0
+
+# ── Percentage-based position sizing ──────────────────────────────────────────
+# MAX_STAKE_PCT  : max % of balance per single trade  (default 5%)
+# MAX_EXPOSURE_PCT: max % of balance across all open positions (default 80%)
+MAX_STAKE_PCT    = float(os.environ.get("MAX_STAKE_PCT",    "5"))   / 100
+MAX_EXPOSURE_PCT = float(os.environ.get("MAX_EXPOSURE_PCT", "80"))  / 100
 
 STATE_PATH     = os.path.join(os.path.dirname(__file__), "bot_state.json")
 TRADE_LOG_PATH = os.path.join(os.path.dirname(__file__), "trade_log.jsonl")
@@ -131,13 +135,13 @@ class TradingOrchestrator:
         self.weather_only = True
         self.min_ev_threshold = MIN_EV_THRESHOLD
         self.min_confidence = MIN_CONFIDENCE
-        self.paper_balance = 2000.0
+        self.paper_balance = float(os.environ.get("PAPER_BALANCE", "100"))
         self.recently_closed: Dict[str, str] = {}
         self.pinned_positions: set = set()
         self._thread: Optional[threading.Thread] = None
         self._load_state()
         print(
-            f"[Orchestrator] Init. MaxStake=${MAX_STAKE_USD}, MaxExp=${MAX_TOTAL_EXPOSURE}, "
+            f"[Orchestrator] Init. MaxStakePct={MAX_STAKE_PCT:.0%}, MaxExposurePct={MAX_EXPOSURE_PCT:.0%}, "
             f"WeatherOnly={self.weather_only}, MinDays={MIN_DAYS_TO_EXPIRY}"
         )
 
@@ -153,7 +157,7 @@ class TradingOrchestrator:
                 self.weather_only     = data.get("weather_only", True)
                 self.min_ev_threshold = data.get("min_ev_threshold", MIN_EV_THRESHOLD)
                 self.min_confidence   = data.get("min_confidence", MIN_CONFIDENCE)
-                self.paper_balance    = data.get("paper_balance", 2000.0)
+                self.paper_balance    = data.get("paper_balance", float(os.environ.get("PAPER_BALANCE", "100")))
                 self.recently_closed  = data.get("recently_closed", {})
                 self.pinned_positions = set(data.get("pinned_positions", []))
                 self._purge_expired_cooldowns()
@@ -211,8 +215,10 @@ class TradingOrchestrator:
         print(f"\n[Scan #{self.scan_count}] {datetime.utcnow().isoformat()} "
               f"| WeatherOnly={self.weather_only} | WinRate={win_rate:.1%}")
 
+        available      = self.paper_balance if self.paper_trade_mode else get_wallet_balance(paper_trade=False)
+        max_exposure   = available * MAX_EXPOSURE_PCT
         total_exposure = sum(p.get("stake_usd", 0) for p in self.positions.values())
-        if total_exposure < MAX_TOTAL_EXPOSURE:
+        if total_exposure < max_exposure:
             self._discover_and_enter_trades(win_rate)
 
         self._monitor_positions()
@@ -379,11 +385,11 @@ class TradingOrchestrator:
         if win_rate < MIN_WIN_RATE_FOR_LARGE_STAKES:
             stake_mult = min(stake_mult, 0.25)
 
-        available  = self.paper_balance if self.paper_trade_mode else MAX_STAKE_USD * 20
-        dynamic_max = min(MAX_STAKE_USD * 5, available * 0.05)
+        available   = self.paper_balance if self.paper_trade_mode else get_wallet_balance(paper_trade=False, mock_balance=self.paper_balance)
+        max_stake   = available * MAX_STAKE_PCT          # e.g. 5% of $100 = $5
         ev_boost    = min(1.5, 1.0 + max(0.0, ev - 0.30) * 1.0)
-        kelly_stake = kelly * available * 0.10
-        stake = round(min(dynamic_max * stake_mult * ev_boost, kelly_stake, dynamic_max), 2)
+        kelly_stake = kelly * available * 0.10           # Kelly fraction of 10% of balance
+        stake = round(min(max_stake * stake_mult * ev_boost, kelly_stake, max_stake), 2)
 
         if stake < 1.0:
             return

@@ -1,6 +1,7 @@
 """
 Polymarket market discovery and price fetching via Gamma API and CLOB API.
 """
+import json
 import requests
 from typing import Optional, List
 
@@ -8,7 +9,7 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API  = "https://clob.polymarket.com"
 
 
-def _safe_get(url: str, params: dict = None, timeout: int = 10) -> any:
+def _safe_get(url: str, params: dict = None, timeout: int = 10):
     try:
         r = requests.get(url, params=params, timeout=timeout)
         r.raise_for_status()
@@ -18,63 +19,71 @@ def _safe_get(url: str, params: dict = None, timeout: int = 10) -> any:
         return {}
 
 
-def _normalize_market(raw: any) -> Optional[dict]:
-    # Skip non-dict items entirely
+def _parse_json_field(value) -> list:
+    """Parse a field that may be a JSON string or already a list."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _normalize_market(raw) -> Optional[dict]:
     if not isinstance(raw, dict):
         return None
 
-    # Support both camelCase and snake_case field names
-    cid = raw.get("conditionId") or raw.get("condition_id")
-    if not cid:
-        return None
-
+    cid      = raw.get("conditionId")
     question = raw.get("question", "")
-    if not question:
+    if not cid or not question:
         return None
 
-    # Extract token IDs and prices from tokens array
-    tokens = raw.get("tokens") or raw.get("outcomes") or []
-    yes_token = None
-    no_token  = None
+    # outcomes and prices are stored as JSON strings e.g. '["Yes","No"]'
+    outcomes      = _parse_json_field(raw.get("outcomes", "[]"))
+    outcome_prices = _parse_json_field(raw.get("outcomePrices", "[]"))
+    clob_token_ids = _parse_json_field(raw.get("clobTokenIds", "[]"))
+
+    # Map YES/NO prices and token IDs by matching outcomes list
     yes_price = 0.5
     no_price  = 0.5
+    yes_token = None
+    no_token  = None
 
-    for t in tokens:
-        if not isinstance(t, dict):
-            continue
-        outcome = str(t.get("outcome", "")).upper()
-        token_id = t.get("token_id") or t.get("tokenId") or t.get("id")
-        price = t.get("price")
-        if price is None:
-            op = t.get("outcomePrices")
-            price = op[0] if isinstance(op, list) and op else 0.5
-        try:
-            price = float(price)
-        except (TypeError, ValueError):
-            price = 0.5
-
-        if outcome == "YES":
-            yes_token = token_id
-            yes_price = price
-        elif outcome == "NO":
-            no_token = token_id
-            no_price = price
-
-    # Fallback: some markets store prices at root level
-    if yes_price == 0.5:
-        op = raw.get("outcomePrices")
-        if isinstance(op, list) and len(op) >= 2:
+    for i, outcome in enumerate(outcomes):
+        o = str(outcome).upper()
+        price = 0.5
+        token = clob_token_ids[i] if i < len(clob_token_ids) else None
+        if i < len(outcome_prices):
             try:
-                yes_price = float(op[0])
-                no_price  = float(op[1])
+                price = float(outcome_prices[i])
+            except (TypeError, ValueError):
+                price = 0.5
+
+        if o in ("YES", "Y"):
+            yes_price = price
+            yes_token = token
+        elif o in ("NO", "N"):
+            no_price  = price
+            no_token  = token
+
+    # Fallback for markets with non-standard outcome names (first = YES, second = NO)
+    if yes_token is None and len(clob_token_ids) >= 2:
+        yes_token = clob_token_ids[0]
+        no_token  = clob_token_ids[1]
+        if len(outcome_prices) >= 2:
+            try:
+                yes_price = float(outcome_prices[0])
+                no_price  = float(outcome_prices[1])
             except (TypeError, ValueError):
                 pass
 
-    liquidity = 0.0
     try:
-        liquidity = float(raw.get("liquidity") or raw.get("liquidityNum") or 0)
+        liquidity = float(raw.get("liquidityNum") or raw.get("liquidity") or 0)
     except (TypeError, ValueError):
-        pass
+        liquidity = 0.0
 
     return {
         "conditionId":   cid,
@@ -82,8 +91,8 @@ def _normalize_market(raw: any) -> Optional[dict]:
         "active":        raw.get("active", True),
         "probabilities": {"YES": round(yes_price, 4), "NO": round(no_price, 4)},
         "liquidity":     liquidity,
-        "volume24h":     float(raw.get("volume24hr") or raw.get("volume") or 0),
-        "endDate":       raw.get("endDate") or raw.get("end_date_iso") or raw.get("endDateIso"),
+        "volume24h":     float(raw.get("volume24hr") or raw.get("volume24hrClob") or 0),
+        "endDate":       raw.get("endDate") or raw.get("endDateIso"),
         "yesTokenId":    yes_token,
         "noTokenId":     no_token,
         "negRisk":       raw.get("negRisk", False),
@@ -92,20 +101,18 @@ def _normalize_market(raw: any) -> Optional[dict]:
 
 def fetch_all_active_markets(limit: int = 100) -> List[dict]:
     data = _safe_get(f"{GAMMA_API}/markets", params={
-        "active": "true",
-        "closed": "false",
-        "limit":  limit,
-        "order":  "volume24hr",
+        "active":    "true",
+        "closed":    "false",
+        "limit":     limit,
+        "order":     "volume24hr",
         "ascending": "false",
     })
 
-    # Handle both list response and dict with markets key
+    raw_list = []
     if isinstance(data, list):
         raw_list = data
     elif isinstance(data, dict):
         raw_list = data.get("markets") or data.get("data") or []
-    else:
-        raw_list = []
 
     result = []
     for item in raw_list:
@@ -118,7 +125,7 @@ def fetch_all_active_markets(limit: int = 100) -> List[dict]:
 
 
 def fetch_weather_markets() -> List[dict]:
-    weather_terms = ["temperature", "degrees", "fahrenheit", "celsius", "°f", "°c", "weather", "high temp"]
+    weather_terms = ["temperature", "degrees", "fahrenheit", "celsius", "°f", "°c", "high temp", "weather"]
     markets = fetch_all_active_markets(limit=200)
     filtered = [
         m for m in markets
@@ -149,19 +156,13 @@ def fetch_gamma_price(condition_id: str, side: str = "YES") -> Optional[float]:
         data = _safe_get(f"{GAMMA_API}/markets/{condition_id}")
         if not isinstance(data, dict):
             return None
-        tokens = data.get("tokens") or data.get("outcomes") or []
-        for t in tokens:
-            if not isinstance(t, dict):
-                continue
-            if str(t.get("outcome", "")).upper() == side.upper():
-                price = t.get("price")
-                if price is None:
-                    op = t.get("outcomePrices")
-                    price = op[0] if isinstance(op, list) and op else None
-                if price is not None:
-                    val = float(price)
-                    if 0.01 <= val <= 0.99:
-                        return val
+        outcomes       = _parse_json_field(data.get("outcomes", "[]"))
+        outcome_prices = _parse_json_field(data.get("outcomePrices", "[]"))
+        for i, outcome in enumerate(outcomes):
+            if str(outcome).upper() == side.upper() and i < len(outcome_prices):
+                val = float(outcome_prices[i])
+                if 0.01 <= val <= 0.99:
+                    return val
     except Exception:
         pass
     return None
@@ -186,7 +187,6 @@ def fetch_market_price(token_id: str) -> Optional[float]:
 
 
 def get_user_positions(wallet_address: str) -> List[dict]:
-    # Correct Polymarket Data API endpoint for positions
     data = _safe_get(
         "https://data-api.polymarket.com/positions",
         params={"user": wallet_address, "sizeThreshold": "0.01", "limit": 50}

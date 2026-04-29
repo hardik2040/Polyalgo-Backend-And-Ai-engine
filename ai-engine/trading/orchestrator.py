@@ -232,8 +232,16 @@ class TradingOrchestrator:
             else:
                 markets = fetch_all_active_markets(limit=150)
         except Exception as e:
+            import traceback
             print(f"[Discovery] Error: {e}")
+            traceback.print_exc()
             return
+
+        skip_already  = 0
+        skip_cooldown = 0
+        skip_expiry   = 0
+        skip_price    = 0
+        skip_liq      = 0
 
         candidates = []
         for market in markets:
@@ -245,19 +253,31 @@ class TradingOrchestrator:
             dq              = _check_data_quality(market)
 
             if cid in self.positions:
+                skip_already += 1
                 continue
             if self._is_in_cooldown(cid):
+                skip_cooldown += 1
                 continue
 
             days_left = dq["days_to_expiry"]
             if days_left is None or days_left < MIN_DAYS_TO_EXPIRY:
+                skip_expiry += 1
+                print(f"   [SKIP:expiry] {question[:60]} | days={days_left}")
                 continue
             if market_prob_yes < MIN_MARKET_PRICE or market_prob_yes > MAX_MARKET_PRICE:
+                skip_price += 1
+                print(f"   [SKIP:price] {question[:60]} | YES={market_prob_yes:.3f}")
                 continue
             if liquidity < MIN_LIQUIDITY_USD:
+                skip_liq += 1
+                print(f"   [SKIP:liquidity] {question[:60]} | liq=${liquidity:.0f}")
                 continue
 
             candidates.append((market, days_left, dq))
+
+        print(f"   [FILTER] total={len(markets)} candidates={len(candidates)} "
+              f"skip: holding={skip_already} cooldown={skip_cooldown} "
+              f"expiry={skip_expiry} price={skip_price} liq={skip_liq}")
 
         scored = []
         new_signals = []

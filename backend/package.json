@@ -1,0 +1,26 @@
+{
+  "name": "polyalgo-backend",
+  "version": "1.0.0",
+  "description": "PolyAlgo Node.js Backend",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "axios": "^1.6.0",
+    "fastify": "^4.24.0",
+    "fastify-socket.io": "^5.0.0",
+    "mongoose": "^8.0.0",
+    "pino": "^8.16.0",
+    "pino-pretty": "^10.2.0",
+    "socket.io": "^4.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0"
+  }
+}

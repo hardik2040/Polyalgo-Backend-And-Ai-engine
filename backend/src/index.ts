@@ -1,8 +1,14 @@
-import Fastify from 'fastify';
+import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import socketio from 'fastify-socket.io';
 import axios from 'axios';
 import pino from 'pino';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    io: import('socket.io').Server;
+  }
+}
 import { connectDB } from './config/db';
 import Prediction from './models/Prediction';
 import Trade from './models/Trade';
@@ -262,9 +268,9 @@ const broadcastLiveState = async () => {
       timestamp:       new Date().toISOString(),
     };
 
-    fastify.io.emit('state_update', state);
+    (fastify as any).io.emit('state_update', state);
   } catch (err) {
-    fastify.log.error('Broadcast error:', err);
+    fastify.log.error({ err }, 'Broadcast error');
   }
 };
 

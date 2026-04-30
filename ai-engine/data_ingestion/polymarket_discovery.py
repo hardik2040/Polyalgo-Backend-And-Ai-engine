@@ -100,33 +100,45 @@ def _normalize_market(raw) -> Optional[dict]:
 
 
 def fetch_all_active_markets(limit: int = 100) -> List[dict]:
-    data = _safe_get(f"{GAMMA_API}/markets", params={
-        "active":    "true",
-        "closed":    "false",
-        "limit":     limit,
-        "order":     "volume24hr",
-        "ascending": "false",
-    })
-
-    raw_list = []
-    if isinstance(data, list):
-        raw_list = data
-    elif isinstance(data, dict):
-        raw_list = data.get("markets") or data.get("data") or []
-
+    PAGE_SIZE = 100
     result = []
-    for item in raw_list:
-        norm = _normalize_market(item)
-        if norm:
-            result.append(norm)
+    offset = 0
 
-    print(f"[Discovery] {len(result)} markets normalized from {len(raw_list)} raw")
-    return result
+    while True:
+        data = _safe_get(f"{GAMMA_API}/markets", params={
+            "active":    "true",
+            "closed":    "false",
+            "limit":     PAGE_SIZE,
+            "offset":    offset,
+            "order":     "volume24hr",
+            "ascending": "false",
+        })
+
+        raw_list = []
+        if isinstance(data, list):
+            raw_list = data
+        elif isinstance(data, dict):
+            raw_list = data.get("markets") or data.get("data") or []
+
+        if not raw_list:
+            break
+
+        for item in raw_list:
+            norm = _normalize_market(item)
+            if norm:
+                result.append(norm)
+
+        offset += PAGE_SIZE
+        if len(raw_list) < PAGE_SIZE or len(result) >= limit:
+            break
+
+    print(f"[Discovery] {len(result)} markets fetched (limit={limit})")
+    return result[:limit]
 
 
 def fetch_weather_markets() -> List[dict]:
     weather_terms = ["temperature", "degrees", "fahrenheit", "celsius", "°f", "°c", "high temp", "weather"]
-    markets = fetch_all_active_markets(limit=200)
+    markets = fetch_all_active_markets(limit=500)
     filtered = [
         m for m in markets
         if any(t in m.get("question", "").lower() for t in weather_terms)

@@ -230,7 +230,7 @@ class TradingOrchestrator:
             if self.weather_only:
                 markets = fetch_weather_markets()
             else:
-                markets = fetch_all_active_markets(limit=150)
+                markets = fetch_all_active_markets(limit=700)
         except Exception as e:
             import traceback
             print(f"[Discovery] Error: {e}")

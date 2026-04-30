@@ -165,7 +165,10 @@ def fetch_clob_midpoint(token_id: str) -> Optional[float]:
 
 def fetch_gamma_price(condition_id: str, side: str = "YES") -> Optional[float]:
     try:
-        data = _safe_get(f"{GAMMA_API}/markets/{condition_id}")
+        data = _safe_get(f"{GAMMA_API}/markets", params={"conditionId": condition_id})
+        # API returns a list when queried by conditionId
+        if isinstance(data, list):
+            data = data[0] if data else {}
         if not isinstance(data, dict):
             return None
         outcomes       = _parse_json_field(data.get("outcomes", "[]"))

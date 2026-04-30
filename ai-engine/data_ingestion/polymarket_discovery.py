@@ -138,7 +138,7 @@ def fetch_all_active_markets(limit: int = 100) -> List[dict]:
 
 def fetch_weather_markets() -> List[dict]:
     weather_terms = ["temperature", "degrees", "fahrenheit", "celsius", "°f", "°c", "high temp", "weather"]
-    markets = fetch_all_active_markets(limit=1000)
+    markets = fetch_all_active_markets(limit=2000)
     filtered = [
         m for m in markets
         if any(t in m.get("question", "").lower() for t in weather_terms)

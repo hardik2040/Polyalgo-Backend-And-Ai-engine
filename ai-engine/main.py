@@ -325,6 +325,14 @@ def bot_trades():
     return {"trades": orchestrator.get_trade_log()}
 
 
+@app.post("/bot/trade-signal/{condition_id}")
+def trade_signal_endpoint(condition_id: str):
+    result = orchestrator.trade_signal(condition_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Trade failed"))
+    return result
+
+
 @app.post("/positions/{condition_id}/sell")
 def manual_sell_position(condition_id: str):
     result = orchestrator.manual_sell(condition_id)

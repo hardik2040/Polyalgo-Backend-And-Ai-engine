@@ -98,6 +98,17 @@ fastify.get('/api/positions', async (req, reply) => {
   return reply.send({ success: true, positions: res.data.positions || [] });
 });
 
+fastify.post('/api/signals/:conditionId/trade', async (req: any, reply) => {
+  const { conditionId } = req.params;
+  try {
+    const res = await axios.post(`${AI_ENGINE}/bot/trade-signal/${conditionId}`);
+    return reply.send(res.data);
+  } catch (e: any) {
+    const msg = e.response?.data?.detail || e.message || 'Trade failed';
+    return reply.status(e.response?.status || 400).send({ success: false, error: msg });
+  }
+});
+
 fastify.post('/api/positions/:conditionId/sell', async (req: any, reply) => {
   const { conditionId } = req.params;
   const res = await axios.post(`${AI_ENGINE}/positions/${conditionId}/sell`)

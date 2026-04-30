@@ -139,6 +139,7 @@ class TradingOrchestrator:
         self.recently_closed: Dict[str, str] = {}
         self.pinned_positions: set = set()
         self._thread: Optional[threading.Thread] = None
+        self._signal_items: Dict[str, dict] = {}  # full market data keyed by conditionId
         self._load_state()
         print(
             f"[Orchestrator] Init. MaxStakePct={MAX_STAKE_PCT:.0%}, MaxExposurePct={MAX_EXPOSURE_PCT:.0%}, "
@@ -350,7 +351,7 @@ class TradingOrchestrator:
             if trade_side is None or not token_id:
                 continue
 
-            scored.append({
+            item = {
                 "market":           market,
                 "cid":              cid,
                 "question":         question,
@@ -365,7 +366,9 @@ class TradingOrchestrator:
                 "market_prob_yes":  market_prob_yes,
                 "signal":           signal,
                 "score":            confidence * ev,
-            })
+            }
+            self._signal_items[cid] = item
+            scored.append(item)
 
         scored.sort(key=lambda x: -x["score"])
         city_date_committed: set = set()
@@ -378,8 +381,10 @@ class TradingOrchestrator:
             self._execute_trade(item, win_rate)
 
         self.signals = (new_signals + self.signals)[:50]
+        active_cids = {s["conditionId"] for s in self.signals}
+        self._signal_items = {cid: item for cid, item in self._signal_items.items() if cid in active_cids}
 
-    def _execute_trade(self, item: dict, win_rate: float):
+    def _execute_trade(self, item: dict, win_rate: float, user_initiated: bool = False):
         cid        = item["cid"]
         question   = item["question"]
         trade_side = item["trade_side"]
@@ -398,10 +403,13 @@ class TradingOrchestrator:
             has_position=False
         )
 
-        if rl_decision["action"] == "HOLD" or rl_decision["stake_multiplier"] == 0:
-            return
+        if not user_initiated:
+            if rl_decision["action"] == "HOLD" or rl_decision["stake_multiplier"] == 0:
+                return
 
         stake_mult = rl_decision["stake_multiplier"]
+        if stake_mult == 0:
+            stake_mult = 0.5  # user-initiated: default to BUY_MEDIUM
         if win_rate < MIN_WIN_RATE_FOR_LARGE_STAKES:
             stake_mult = min(stake_mult, 0.25)
 
@@ -448,6 +456,7 @@ class TradingOrchestrator:
                 "pnl_pct":           0.0,
                 "currentPrice":      price,
                 "sellThinking":      "Monitoring — waiting for take-profit or stop-loss trigger.",
+                "source":            "user" if user_initiated else "bot",
             }
             self.positions[cid] = pos
 
@@ -658,6 +667,46 @@ class TradingOrchestrator:
             self.pinned_positions.discard(cid)
         self._save_state()
         return {"success": True, "conditionId": cid, "pinned": pinned}
+
+    def trade_signal(self, cid: str) -> dict:
+        if cid in self.positions:
+            return {"success": False, "error": "Already have an open position in this market"}
+        if self._is_in_cooldown(cid):
+            return {"success": False, "error": "Market is in cooldown after a recent close"}
+        if cid not in self._signal_items:
+            return {"success": False, "error": "Signal not found — wait for the next scan (signals refresh every 60s)"}
+
+        # Reject if signal is stale (> 10 minutes old)
+        signal_data = next((s for s in self.signals if s["conditionId"] == cid), None)
+        if signal_data:
+            try:
+                ts = datetime.fromisoformat(signal_data["timestamp"])
+                age_sec = (datetime.utcnow() - ts).total_seconds()
+                if age_sec > 600:
+                    return {"success": False, "error": f"Signal is {age_sec/60:.0f}m old — wait for next scan to refresh"}
+            except Exception:
+                pass
+
+        item = self._signal_items[cid]
+        if not item.get("token_id"):
+            return {"success": False, "error": "No valid token ID for this market — cannot place order"}
+        if not item.get("trade_side") or item["trade_side"] == "SKIP":
+            return {"success": False, "error": "Signal has no actionable trade direction (EV too low)"}
+
+        win_rate = self._current_win_rate()
+        try:
+            self._execute_trade(item, win_rate, user_initiated=True)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        if cid in self.positions:
+            self._save_state()
+            return {
+                "success": True,
+                "position": self.positions[cid],
+                "message": "Trade entered. AI engine will monitor and exit automatically via stop-loss/take-profit/RL.",
+            }
+        return {"success": False, "error": "Trade rejected — balance too low or stake below $1 minimum"}
 
     def get_signals(self) -> list:
         return self.signals[:20]

@@ -1,8 +1,6 @@
 import Fastify, { FastifyInstance } from 'fastify';
-import cors from '@fastify/cors';
 import socketio from 'fastify-socket.io';
 import axios from 'axios';
-import pino from 'pino';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -13,7 +11,6 @@ import { connectDB } from './config/db';
 import Prediction from './models/Prediction';
 import Trade from './models/Trade';
 
-const logger = pino({ transport: { target: 'pino-pretty' } });
 const AI_ENGINE  = process.env.AI_ENGINE_URL ?? 'http://127.0.0.1:8000';
 const PORT       = parseInt(process.env.PORT ?? '3000', 10);
 const CORS_ORIGIN = (process.env.CORS_ORIGIN ?? '*').split(',').map(s => s.trim());
@@ -22,7 +19,8 @@ const fastify = Fastify({
   logger: { transport: { target: 'pino-pretty' } }
 });
 
-fastify.register(cors, { origin: CORS_ORIGIN });
+// CORS is handled entirely by nginx — do NOT register @fastify/cors here
+// (duplicate headers cause "Access-Control-Allow-Origin: *, *" which browsers reject)
 fastify.register(socketio, { cors: { origin: CORS_ORIGIN } });
 
 // ═══════════════════════════════════════════════════════════════════════════════

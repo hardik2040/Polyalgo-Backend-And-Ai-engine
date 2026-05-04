@@ -485,10 +485,11 @@ class TradingOrchestrator:
             if pos.get("status") != "OPEN":
                 continue
 
+            # No warmup delay — monitor immediately for stop-loss protection
             try:
                 entered_at  = datetime.fromisoformat(pos.get("enteredAt", "1970-01-01"))
                 age_seconds = (datetime.utcnow() - entered_at).total_seconds()
-                if age_seconds < 300:
+                if age_seconds < 30:   # only skip first 30s to let order settle
                     continue
             except Exception:
                 pass

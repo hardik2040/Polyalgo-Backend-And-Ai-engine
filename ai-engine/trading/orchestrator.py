@@ -14,7 +14,8 @@ load_dotenv()
 
 from data_ingestion.polymarket_discovery import (
     fetch_weather_markets, fetch_all_active_markets,
-    get_user_positions, fetch_market_price, fetch_gamma_price, fetch_clob_midpoint
+    get_user_positions, fetch_market_price, fetch_gamma_price, fetch_clob_midpoint,
+    fetch_market_resolution
 )
 from data_ingestion.weather_service import analyze_temperature_question, is_weather_question
 from data_ingestion.external_apis import fetch_external_signals
@@ -457,6 +458,7 @@ class TradingOrchestrator:
                 "currentPrice":      price,
                 "sellThinking":      "Monitoring — waiting for take-profit or stop-loss trigger.",
                 "source":            "user" if user_initiated else "bot",
+                "endDate":           item.get("end_date"),
             }
             self.positions[cid] = pos
 
@@ -493,14 +495,15 @@ class TradingOrchestrator:
 
             token_id    = pos.get("tokenId")
             entry_price = pos.get("entryPrice", 0.5)
+            side        = pos.get("side", "YES")
 
             current_price = fetch_clob_midpoint(token_id) if token_id else None
             if not current_price or current_price <= 0:
-                current_price = fetch_gamma_price(cid, pos.get("side", "YES"))
+                current_price = fetch_gamma_price(cid, side)
             if not current_price or current_price <= 0:
                 current_price = fetch_market_price(token_id) if token_id else None
             if not current_price or current_price <= 0:
-                continue
+                current_price = entry_price  # fallback to entry price for P&L display
 
             pnl_pct = ((current_price - entry_price) / entry_price) * 100
             pnl_usd = (current_price - entry_price) * pos.get("stake_usd", 0) / entry_price
@@ -509,6 +512,34 @@ class TradingOrchestrator:
             pos["pnl_pct"]      = round(pnl_pct, 2)
             pos["pnl_usd"]      = round(pnl_usd, 2)
 
+            # ── 1. Market resolution check (highest priority) ─────────────────
+            resolution = fetch_market_resolution(cid)
+            if resolution["resolved"]:
+                winner = resolution["winner"]
+                if winner == side:
+                    exit_price = 1.0
+                    reason     = f"market_resolved_{winner}_WIN"
+                    pos["sellThinking"] = f"Market resolved {winner} — WIN! Collecting full payout at $1.00/share."
+                elif winner is not None:
+                    exit_price = 0.0
+                    reason     = f"market_resolved_{winner}_LOSS"
+                    pos["sellThinking"] = f"Market resolved {winner} — LOSS. Position expired worthless."
+                else:
+                    exit_price = current_price
+                    reason     = "market_resolved_unknown"
+                    pos["sellThinking"] = "Market resolved with unknown outcome — closing at last price."
+                self._close_position(cid, pos, exit_price, reason)
+                continue
+
+            # ── 2. Expiry check — close at current price if endDate passed ────
+            end_date  = pos.get("endDate")
+            days_left = _days_until_expiry(end_date) if end_date else None
+            if days_left is not None and days_left <= 0:
+                pos["sellThinking"] = f"Market expired {abs(days_left):.1f}d ago — closing at last known price."
+                self._close_position(cid, pos, current_price, "expiry_close")
+                continue
+
+            # ── 3. Pinned — skip auto-exit ────────────────────────────────────
             if cid in self.pinned_positions:
                 pos["sellThinking"] = (
                     f"Pinned by user — holding despite any exit signals. "
@@ -516,6 +547,7 @@ class TradingOrchestrator:
                 )
                 continue
 
+            # ── 4. RL stop-loss / take-profit / hold ──────────────────────────
             exit_rec = rl_agent.get_exit_recommendation(
                 current_pnl_pct=pnl_pct,
                 market_prob=current_price,
@@ -527,8 +559,9 @@ class TradingOrchestrator:
                 pos["sellThinking"] = f"CRITICAL: {exit_rec['reason']}. Executing SELL at {current_price:.3f}."
                 self._close_position(cid, pos, current_price, exit_rec["reason"])
             else:
+                days_info = f" | {days_left:.1f}d left" if days_left is not None else ""
                 pos["sellThinking"] = (
-                    f"Holding: P&L {pnl_pct:+.1f}%. "
+                    f"Holding: P&L {pnl_pct:+.1f}%{days_info}. "
                     f"RL: HOLD ({exit_rec.get('reason', 'no_exit_signal')})."
                 )
 
@@ -713,6 +746,76 @@ class TradingOrchestrator:
 
     def get_trade_log(self) -> list:
         return self.trade_log[-30:]
+
+    def get_trade_reports(self) -> dict:
+        _REASON_LABELS = {
+            "stop_loss":                "Stop Loss (-40%)",
+            "take_profit":              "Take Profit (+80%)",
+            "manual_sell":              "Manual Sell",
+            "market_resolved_YES_WIN":  "Resolved YES — WIN",
+            "market_resolved_NO_WIN":   "Resolved NO  — WIN",
+            "market_resolved_YES_LOSS": "Resolved YES — LOSS",
+            "market_resolved_NO_LOSS":  "Resolved NO  — LOSS",
+            "market_resolved_unknown":  "Resolved (unknown)",
+            "expiry_close":             "Market Expired",
+            "rl_exit":                  "RL Agent Exit",
+        }
+
+        closed = [t for t in self.trade_log if t.get("action") == "SELL"]
+        reports = []
+        for t in closed:
+            entry  = float(t.get("entryPrice") or 0)
+            exit_  = float(t.get("exitPrice")  or 0)
+            stake  = float(t.get("stake_usd")  or 0)
+            pnl    = float(t.get("realizedPnl") or 0)
+            pnl_pct = round(((exit_ - entry) / entry * 100) if entry > 0 else 0, 1)
+            reason = t.get("exitReason", "unknown")
+            reports.append({
+                "tradeId":     t.get("tradeId"),
+                "question":    t.get("question"),
+                "side":        t.get("side"),
+                "mode":        t.get("mode", "paper_trade"),
+                "entryPrice":  round(entry, 4),
+                "exitPrice":   round(exit_, 4),
+                "enteredAt":   t.get("enteredAt"),
+                "closedAt":    t.get("closedAt"),
+                "stakeUsd":    round(stake, 2),
+                "realizedPnl": round(pnl, 2),
+                "pnlPct":      pnl_pct,
+                "exitReason":  reason,
+                "exitLabel":   _REASON_LABELS.get(reason, reason),
+                "ev":          round(float(t.get("ev") or 0), 4),
+                "confidence":  round(float(t.get("confidence") or 0), 3),
+                "daysToExpiry": t.get("daysToExpiry"),
+            })
+
+        reports.reverse()  # most recent first
+
+        wins      = [r for r in reports if r["realizedPnl"] > 0]
+        losses    = [r for r in reports if r["realizedPnl"] < 0]
+        total_pnl = sum(r["realizedPnl"] for r in reports)
+
+        by_reason: dict = {}
+        for r in reports:
+            lbl = r["exitLabel"]
+            if lbl not in by_reason:
+                by_reason[lbl] = {"count": 0, "pnl": 0.0}
+            by_reason[lbl]["count"] += 1
+            by_reason[lbl]["pnl"]    = round(by_reason[lbl]["pnl"] + r["realizedPnl"], 2)
+
+        return {
+            "reports": reports,
+            "summary": {
+                "total_trades": len(reports),
+                "wins":         len(wins),
+                "losses":       len(losses),
+                "win_rate":     round(len(wins) / len(reports), 3) if reports else 0,
+                "total_pnl":    round(total_pnl, 2),
+                "avg_win":      round(sum(r["realizedPnl"] for r in wins)   / len(wins),   2) if wins   else 0,
+                "avg_loss":     round(sum(r["realizedPnl"] for r in losses) / len(losses), 2) if losses else 0,
+                "by_reason":    by_reason,
+            },
+        }
 
 
 orchestrator = TradingOrchestrator()

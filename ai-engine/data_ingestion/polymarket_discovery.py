@@ -163,6 +163,52 @@ def fetch_clob_midpoint(token_id: str) -> Optional[float]:
     return None
 
 
+def fetch_market_resolution(condition_id: str) -> dict:
+    """
+    Check if a Polymarket market has resolved.
+    Returns {"resolved": bool, "winner": "YES"|"NO"|None}
+    When resolved YES and you held YES → exit at 1.0 (win)
+    When resolved NO  and you held YES → exit at 0.0 (loss)
+    """
+    try:
+        data = _safe_get(f"{GAMMA_API}/markets", params={"conditionId": condition_id})
+        raw  = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None)
+        if not raw:
+            return {"resolved": False, "winner": None}
+
+        active    = raw.get("active", True)
+        closed    = raw.get("closed", False)
+        outcomes  = _parse_json_field(raw.get("outcomes", "[]"))
+        prices    = _parse_json_field(raw.get("outcomePrices", "[]"))
+
+        yes_price = None
+        for i, o in enumerate(outcomes):
+            if str(o).upper() in ("YES", "Y") and i < len(prices):
+                try:
+                    yes_price = float(prices[i])
+                except (TypeError, ValueError):
+                    pass
+
+        if not active or closed:
+            if yes_price is not None:
+                winner = "YES" if yes_price >= 0.95 else ("NO" if yes_price <= 0.05 else None)
+            else:
+                winner = None
+            return {"resolved": True, "winner": winner}
+
+        # Still active but price at extreme = effectively resolved
+        if yes_price is not None:
+            if yes_price >= 0.97:
+                return {"resolved": True, "winner": "YES"}
+            if yes_price <= 0.03:
+                return {"resolved": True, "winner": "NO"}
+
+        return {"resolved": False, "winner": None}
+    except Exception as e:
+        print(f"[Resolution] Error checking {condition_id}: {e}")
+        return {"resolved": False, "winner": None}
+
+
 def fetch_gamma_price(condition_id: str, side: str = "YES") -> Optional[float]:
     try:
         data = _safe_get(f"{GAMMA_API}/markets", params={"conditionId": condition_id})

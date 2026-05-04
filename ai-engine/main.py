@@ -325,6 +325,11 @@ def bot_trades():
     return {"trades": orchestrator.get_trade_log()}
 
 
+@app.get("/bot/reports")
+def bot_reports():
+    return orchestrator.get_trade_reports()
+
+
 @app.post("/bot/trade-signal/{condition_id}")
 def trade_signal_endpoint(condition_id: str):
     result = orchestrator.trade_signal(condition_id)

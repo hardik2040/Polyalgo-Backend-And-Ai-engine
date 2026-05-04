@@ -91,6 +91,13 @@ fastify.get('/api/signals', async (req, reply) => {
   return reply.send({ success: true, signals: res.data.signals || [] });
 });
 
+fastify.get('/api/reports', async (req, reply) => {
+  const res = await axios.get(`${AI_ENGINE}/bot/reports`).catch(() => ({
+    data: { reports: [], summary: { total_trades: 0, wins: 0, losses: 0, win_rate: 0, total_pnl: 0, avg_win: 0, avg_loss: 0, by_reason: {} } }
+  }));
+  return reply.send(res.data);
+});
+
 fastify.get('/api/positions', async (req, reply) => {
   const res = await axios.get(`${AI_ENGINE}/bot/positions`).catch(() => ({ data: { positions: [] } }));
   return reply.send({ success: true, positions: res.data.positions || [] });

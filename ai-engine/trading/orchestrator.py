@@ -320,11 +320,13 @@ class TradingOrchestrator:
                     # Weighted blend: 70% model signal, 30% historical accuracy
                     confidence = round(confidence * 0.70 + city_wr * 0.30, 3)
 
+                diff_c_raw = analysis.get("diff_c")
+                diff_str   = f"{diff_c_raw:+.1f}" if isinstance(diff_c_raw, (int, float)) else "?"
                 thinking = (
                     f"Weather: forecast={analysis.get('actual_temp_c','?')}°C "
                     f"target={analysis.get('threshold_c','?')}°C "
-                    f"diff={analysis.get('diff_c','?'):+}°C "
-                    f"exact={analysis.get('is_exact_market', '?')} "
+                    f"diff={diff_str}°C "
+                    f"exact={analysis.get('is_exact_market','?')} "
                     f"Prob={true_prob:.2f} conf={confidence:.2f}."
                 )
             else:

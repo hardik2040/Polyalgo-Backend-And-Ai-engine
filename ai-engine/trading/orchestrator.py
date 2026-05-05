@@ -244,6 +244,16 @@ class TradingOrchestrator:
         skip_expiry   = 0
         skip_price    = 0
         skip_liq      = 0
+        skip_city_dup = 0
+
+        # Build set of city-dates already covered by open positions so we never
+        # bet on a second temperature bucket for the same city on the same day.
+        open_city_dates: set = set()
+        for p in self.positions.values():
+            if p.get("status") == "OPEN":
+                key = _city_date_key(p.get("question", ""), p.get("endDate"))
+                if key != "unknown_unknown":
+                    open_city_dates.add(key)
 
         candidates = []
         for market in markets:
@@ -259,6 +269,12 @@ class TradingOrchestrator:
                 continue
             if self._is_in_cooldown(cid):
                 skip_cooldown += 1
+                continue
+            # One bet per city per day — prevents stacking 3-4 losing bets on the
+            # same city when the forecast is uncertain between adjacent temperatures.
+            cd_key = _city_date_key(question, end_date)
+            if cd_key in open_city_dates:
+                skip_city_dup += 1
                 continue
 
             days_left = dq["days_to_expiry"]
@@ -279,7 +295,7 @@ class TradingOrchestrator:
 
         print(f"   [FILTER] total={len(markets)} candidates={len(candidates)} "
               f"skip: holding={skip_already} cooldown={skip_cooldown} "
-              f"expiry={skip_expiry} price={skip_price} liq={skip_liq}")
+              f"expiry={skip_expiry} price={skip_price} liq={skip_liq} city_dup={skip_city_dup}")
 
         scored = []
         new_signals = []
@@ -295,8 +311,20 @@ class TradingOrchestrator:
                 true_prob   = analysis.get("probability", 0.5)
                 confidence  = analysis.get("confidence", 0.1)
                 data_source = analysis.get("source", "open-meteo")
-                thinking    = (
-                    f"Weather: {analysis.get('actual_temp_f','?')}°F vs {analysis.get('threshold_f','?')}°F. "
+
+                # Blend model confidence with city's historical accuracy.
+                # After ≥5 trades for a city, downweight if it's been consistently wrong.
+                city_str = analysis.get("city", "")
+                city_wr  = rl_agent.get_city_win_rate(city_str)
+                if city_wr is not None:
+                    # Weighted blend: 70% model signal, 30% historical accuracy
+                    confidence = round(confidence * 0.70 + city_wr * 0.30, 3)
+
+                thinking = (
+                    f"Weather: forecast={analysis.get('actual_temp_c','?')}°C "
+                    f"target={analysis.get('threshold_c','?')}°C "
+                    f"diff={analysis.get('diff_c','?'):+}°C "
+                    f"exact={analysis.get('is_exact_market', '?')} "
                     f"Prob={true_prob:.2f} conf={confidence:.2f}."
                 )
             else:
@@ -398,10 +426,17 @@ class TradingOrchestrator:
         days_left  = item["days_left"]
         market_prob_yes = item["market_prob_yes"]
 
+        city_str    = ""
+        q_low       = question.lower()
+        if "temperature in " in q_low:
+            after    = q_low.split("temperature in ")[1]
+            city_str = after.split(" be ")[0].strip()
+
+        city_wr     = rl_agent.get_city_win_rate(city_str) or 0.5
         rl_decision = rl_agent.choose_action(
             ev=ev, confidence=confidence,
             pnl_pct=0.0, market_prob=market_prob_yes,
-            has_position=False
+            has_position=False, city_win_rate=city_wr,
         )
 
         if not user_initiated:
@@ -549,11 +584,19 @@ class TradingOrchestrator:
                 continue
 
             # ── 4. RL stop-loss / take-profit / hold ──────────────────────────
+            pos_city = ""
+            pos_q    = pos.get("question", "").lower()
+            if "temperature in " in pos_q:
+                after    = pos_q.split("temperature in ")[1]
+                pos_city = after.split(" be ")[0].strip()
+            pos_city_wr = rl_agent.get_city_win_rate(pos_city) or 0.5
+
             exit_rec = rl_agent.get_exit_recommendation(
                 current_pnl_pct=pnl_pct,
                 market_prob=current_price,
                 ev=pos.get("ev", 0),
-                confidence=pos.get("confidence", 0.5)
+                confidence=pos.get("confidence", 0.5),
+                city_win_rate=pos_city_wr,
             )
 
             if exit_rec["action"] == "SELL":
@@ -585,12 +628,19 @@ class TradingOrchestrator:
                     except Exception as sell_err:
                         print(f"   [SELL-ORDER-ERROR] {trade_id}: {sell_err}")
 
+            q_text = pos.get("question", "").lower()
+            city_name = ""
+            if "temperature in " in q_text:
+                after = q_text.split("temperature in ")[1]
+                city_name = after.split(" be ")[0].strip()
+
             outcome = rl_agent.record_trade_outcome(
                 entry_price=entry_price,
                 exit_price=exit_price,
                 stake_usd=pos["stake_usd"],
                 entry_state=pos.get("rl_state", {}),
-                action_idx=pos.get("rl_action_idx", 0)
+                action_idx=pos.get("rl_action_idx", 0),
+                city=city_name,
             )
 
             pos["status"]      = "CLOSED"

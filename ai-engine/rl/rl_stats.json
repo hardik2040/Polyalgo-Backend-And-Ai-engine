@@ -1,0 +1,7 @@
+{
+  "epsilon": 0.20,
+  "episodes": 0,
+  "wins": 0,
+  "losses": 0,
+  "total_reward": 0.0
+}

@@ -1,0 +1,13 @@
+{
+  "positions": {},
+  "trade_log": [],
+  "total_pnl": 0.0,
+  "paper_trade_mode": true,
+  "weather_only": true,
+  "min_ev_threshold": 0.05,
+  "min_confidence": 0.60,
+  "paper_balance": 100.0,
+  "recently_closed": {},
+  "pinned_positions": [],
+  "last_updated": "2026-05-05T00:00:00"
+}
